@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="theme-color" content="#16a34a">
+<link rel="manifest" href="/manifest.json">
+<title>LiteChat BD (Ultra-Low Data)</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,sans-serif}
+  body{background:#0f172a;color:#f8fafc;height:100dvh;display:flex;flex-direction:column}
+  header{background:#1e293b;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #334155;font-size:13px}
+  .badge{background:#16a34a;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600}
+  .badge.off{background:#dc2626}
+  #login{padding:24px;display:flex;flex-direction:column;gap:12px;max-width:360px;margin:auto;width:100%}
+  input,button{padding:12px;border-radius:10px;border:1px solid #334155;background:#1e293b;color:#fff;font-size:15px}
+  button{background:#16a34a;border:none;font-weight:600;cursor:pointer}
+  button.rec{background:#dc2626}
+  #app{display:none;flex:1;flex-direction:column;overflow:hidden}
+  #chat{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+  .msg{max-width:82%;padding:8px 12px;border-radius:12px;background:#1e293b;align-self:flex-start;word-break:break-word}
+  .msg.me{background:#15803d;align-self:flex-end}
+  .sender{font-size:11px;color:#94a3b8;margin-bottom:3px}
+  .msg.me .sender{color:#bbf7d0}
+  audio{height:34px;max-width:220px;margin-top:4px}
+  #bar{display:flex;gap:6px;padding:8px;background:#1e293b;border-top:1px solid #334155}
+  #text{flex:1;padding:10px}
+</style>
+</head>
+<body>
+<header>
+  <div><b>LiteChat</b> <span id="status" class="badge off">অফলাইন</span></div>
+  <div><span id="online">0 জন</span> • <span id="kb">0.0 KB</span></div>
+</header>
+
+<div id="login">
+  <h2 style="text-align:center">লো-ডেটা চ্যাট</h2>
+  <input id="nameIn" placeholder="আপনার নাম (যেমন: তারেক)" maxlength="20">
+  <input id="roomIn" placeholder="রুম কোড (যেমন: bd123)" maxlength="20" value="bd-public">
+  <button onclick="join()">প্রবেশ করুন</button>
+</div>
+
+<div id="app">
+  <div id="chat"></div>
+  <div id="bar">
+    <input id="text" placeholder="মেসেজ লিখুন..." onkeydown="if(event.key==='Enter')sendText()">
+    <button id="recBtn" onclick="toggleRec()">🎤</button>
+    <button onclick="sendText()">পাঠান</button>
+  </div>
+</div>
+
+<script>
+let ws, myName = '', myRoom = '', totalBytes = 0, mr = null, chunks = [], stream = null;
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+function addBytes(n){ totalBytes += n; document.getElementById('kb').textContent = (totalBytes/1024).toFixed(1) + ' KB'; }
+
+function makePacket(type, payload){
+  const nb = enc.encode(myName);
+  const out = new Uint8Array(2 + nb.length + payload.length);
+  out[0] = type; out[1] = nb.length;
+  out.set(nb, 2); out.set(payload, 2 + nb.length);
+  return out;
+}
+
+function addMsg(sender, text, isMe){
+  const d = document.createElement('div');
+  d.className = 'msg' + (isMe ? ' me' : '');
+  d.innerHTML = `<div class="sender"></div><div class="body"></div>`;
+  d.querySelector('.sender').textContent = sender;
+  d.querySelector('.body').textContent = text;
+  const c = document.getElementById('chat');
+  c.appendChild(d); c.scrollTop = c.scrollHeight;
+}
+
+function addAudio(sender, blob, isMe){
+  const d = document.createElement('div');
+  d.className = 'msg' + (isMe ? ' me' : '');
+  d.innerHTML = `<div class="sender"></div>`;
+  d.querySelector('.sender').textContent = `${sender} (ভয়েস ${(blob.size/1024).toFixed(1)} KB)`;
+  const a = document.createElement('audio');
+  a.controls = true; a.src = URL.createObjectURL(blob);
+  d.appendChild(a);
+  const c = document.getElementById('chat');
+  c.appendChild(d); c.scrollTop = c.scrollHeight;
+}
+
+function connect(){
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  ws = new WebSocket(proto + location.host);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    const st = document.getElementById('status');
+    st.textContent = 'অনলাইন'; st.className = 'badge';
+    const rb = enc.encode(myRoom);
+    const joinPkt = new Uint8Array(1 + rb.length);
+    joinPkt[0] = 1; joinPkt.set(rb, 1);
+    ws.send(joinPkt); addBytes(joinPkt.length);
+    flushQueue();
+  };
+
+  ws.onmessage = (e) => {
+    const buf = new Uint8Array(e.data);
+    addBytes(buf.length);
+    const type = buf[0];
+    if (type === 4) { document.getElementById('online').textContent = dec.decode(buf.slice(1)) + ' জন'; return; }
+    const nLen = buf[1];
+    const sender = dec.decode(buf.slice(2, 2 + nLen));
+    const payload = buf.slice(2 + nLen);
+    if (type === 2) addMsg(sender, dec.decode(payload), false);
+    if (type === 3) addAudio(sender, new Blob([payload], { type: 'audio/webm;codecs=opus' }), false);
+  };
+
+  ws.onclose = () => {
+    const st = document.getElementById('status');
+    st.textContent = 'অফলাইন'; st.className = 'badge off';
+    setTimeout(connect, 2000);
+  };
+}
+
+function join(){
+  myName = document.getElementById('nameIn').value.trim() || 'User' + Math.floor(Math.random()*999);
+  myRoom = document.getElementById('roomIn').value.trim() || 'bd-public';
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+  connect();
+}
+
+function sendText(){
+  const inp = document.getElementById('text');
+  const txt = inp.value.trim();
+  if (!txt) return;
+  inp.value = '';
+  if (ws && ws.readyState === 1) {
+    const pkt = makePacket(2, enc.encode(txt));
+    ws.send(pkt); addBytes(pkt.length);
+    addMsg(myName, txt, true);
+  } else {
+    const q = JSON.parse(localStorage.getItem('q_' + myRoom) || '[]');
+    q.push(txt); localStorage.setItem('q_' + myRoom, JSON.stringify(q));
+    addMsg(myName, txt + ' (অফলাইন - কিউতে আছে)', true);
+  }
+}
+
+function flushQueue(){
+  const q = JSON.parse(localStorage.getItem('q_' + myRoom) || '[]');
+  if (!q.length) return;
+  q.forEach(txt => {
+    const pkt = makePacket(2, enc.encode(txt));
+    ws.send(pkt); addBytes(pkt.length);
+  });
+  localStorage.removeItem('q_' + myRoom);
+}
+
+async function toggleRec(){
+  const btn = document.getElementById('recBtn');
+  if (mr && mr.state === 'recording') {
+    mr.stop(); btn.textContent = '🎤'; btn.className = '';
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+    mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 8000 } : { audioBitsPerSecond: 8000 });
+    chunks = [];
+    mr.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    mr.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(chunks, { type: mime || 'audio/webm' });
+      const arr = new Uint8Array(await blob.arrayBuffer());
+      if (ws && ws.readyState === 1) {
+        const pkt = makePacket(3, arr);
+        ws.send(pkt); addBytes(pkt.length);
+        addAudio(myName, blob, true);
+      } else {
+        alert('ভয়েস পাঠাতে ইন্টারনেট কানেকশন প্রয়োজন!');
+      }
+    };
+    mr.start(); btn.textContent = '⏹️'; btn.className = 'rec';
+  } catch (err) {
+    alert('মাইক্রোফোন পারমিশন দিন (হোস্টিং করলে HTTPS লাগবে)।');
+  }
+}
+</script>
+</body>
+</html>
